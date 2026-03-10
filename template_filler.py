@@ -14,6 +14,8 @@ import os
 from xml.etree import ElementTree as ET
 from pathlib import Path
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from openpyxl import load_workbook
 import datetime
 import json
@@ -35,12 +37,18 @@ def load_excel_data(excel_path):
 
     # 读取两列数据
     raw_data = {}
+    # 收集股东信息
+    shareholders = []
+    
     for row in sheet.iter_rows(min_row=1, values_only=True):
         if len(row) >= 2 and row[0] is not None:
             key = str(row[0]).strip()
             value = str(row[1]) if row[1] is not None else ""
             if key:  # 只处理有字段名的行
                 raw_data[key] = value
+                # 收集股东信息
+                if "股东" in key and value:
+                    shareholders.append(value)
 
     # 生成处理后的数据
     processed_data = {}
@@ -107,10 +115,20 @@ def load_excel_data(excel_path):
         processed_data["国内信字6"] = f"平银{branch_abbr}{department}国内信字{contract_date}{contract_number}"
         processed_data["国内信商字7"] = f"平银{branch_abbr}{department}国内信商字{contract_date}{contract_number}"
     
+    # 7. 股东信息
+    processed_data["股东列表"] = shareholders
+    if shareholders:
+        if len(shareholders) == 1:
+            processed_data["股东"] = shareholders[0]
+        else:
+            # 多个股东用顿号拼接
+            processed_data["股东"] = "、".join(shareholders)
+    
     # 合并原始数据和处理后的数据
     data = {**raw_data, **processed_data}
     
     print(f"处理后的数据: {list(processed_data.keys())}")
+    print(f"股东信息: {shareholders}")
     
     # 返回包含一个字典的列表
     return [data] if data else []
@@ -494,16 +512,280 @@ def fill_template(template_path, excel_path, output_path, debug=False):
     if debug:
         print(f"替换字段列表: {list(replacement_dict.keys())}")
 
+    # 检查是否是股东确认书
+    template_name = os.path.basename(str(template_path))
+    is_shareholder_confirmation = "股东确认书" in template_name
+    
+    # 处理股东确认书的特殊逻辑
+    if is_shareholder_confirmation and "股东列表" in replacement_dict:
+        try:
+            shareholders = replacement_dict["股东列表"]
+            print(f"处理股东确认书，股东数量: {len(shareholders)}")
+            
+            # 查找{{股东}}占位符的位置
+            shareholder_placeholders = []
+            
+            # 检查表格中的{{股东}}
+            for table_idx, table in enumerate(doc.tables):
+                for row_idx, row in enumerate(table.rows):
+                    for cell_idx, cell in enumerate(row.cells):
+                        for para_idx, paragraph in enumerate(cell.paragraphs):
+                            full_text = "".join([run.text for run in paragraph.runs])
+                            placeholders = find_placeholders(full_text)
+                            for placeholder_text, placeholder_name in placeholders:
+                                if placeholder_name == "股东":
+                                    shareholder_placeholders.append({
+                                        "type": "table",
+                                        "table": table,
+                                        "table_idx": table_idx,
+                                        "row_idx": row_idx,
+                                        "cell_idx": cell_idx,
+                                        "paragraph": paragraph
+                                    })
+            
+            # 检查非表格中的{{股东}}
+            for para_idx, paragraph in enumerate(doc.paragraphs):
+                full_text = "".join([run.text for run in paragraph.runs])
+                placeholders = find_placeholders(full_text)
+                for placeholder_text, placeholder_name in placeholders:
+                    if placeholder_name == "股东":
+                        shareholder_placeholders.append({
+                            "type": "paragraph",
+                            "paragraph": paragraph,
+                            "para_idx": para_idx
+                        })
+            
+            print(f"找到 {len(shareholder_placeholders)} 个{{股东}}占位符")
+            
+            # 处理每个{{股东}}占位符
+            for placeholder in shareholder_placeholders:
+                if placeholder["type"] == "table":
+                    # 表格中的{{股东}}
+                    table = placeholder["table"]
+                    row_idx = placeholder["row_idx"]
+                    cell_idx = placeholder["cell_idx"]
+                    paragraph = placeholder["paragraph"]
+                    
+                    if len(shareholders) > 1:
+                        # 多个股东，替换第一个并添加行
+                        # 替换第一个股东
+                        first_shareholder = shareholders[0]
+                        # 获取当前单元格并设置居中
+                        current_cell = table.rows[row_idx].cells[cell_idx]
+                        current_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                        # 合并所有run的文本用于匹配
+                        full_text = "".join([run.text for run in paragraph.runs])
+                        placeholders_in_para = find_placeholders(full_text)
+                        for placeholder_text, placeholder_name in placeholders_in_para:
+                            if placeholder_name == "股东":
+                                placeholder_pos = full_text.find(placeholder_text)
+                                if placeholder_pos != -1:
+                                    # 找到占位符跨越的所有run
+                                    current_pos = 0
+                                    runs_to_modify = []
+                                    for run in paragraph.runs:
+                                        run_start = current_pos
+                                        run_end = current_pos + len(run.text)
+                                        current_pos = run_end
+                                        if run_start < placeholder_pos + len(placeholder_text) and run_end > placeholder_pos:
+                                            runs_to_modify.append((run, run_start, run_end))
+                                    
+                                    if runs_to_modify:
+                                        first_run, first_start, first_end = runs_to_modify[0]
+                                        last_run, last_start, last_end = runs_to_modify[-1]
+                                        
+                                        if len(runs_to_modify) == 1:
+                                            # 占位符完全在一个run中，直接替换
+                                            first_run.text = first_run.text.replace(placeholder_text, first_shareholder)
+                                        else:
+                                            # 占位符跨越多个run，需要合并处理
+                                            offset_in_first = placeholder_pos - first_start
+                                            offset_in_last = (placeholder_pos + len(placeholder_text)) - last_start
+                                            prefix = first_run.text[:offset_in_first] if offset_in_first > 0 else ""
+                                            suffix = last_run.text[offset_in_last:] if offset_in_last < len(last_run.text) else ""
+                                            for run, _, _ in runs_to_modify[1:-1]:
+                                                run.text = ""
+                                            first_run.text = prefix + first_shareholder + suffix
+                                            last_run.text = ""
+                                        # 设置段落水平居中
+                                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    
+                    # 添加剩余股东的行
+                    # 保存原始段落的格式信息
+                    orig_paragraph = paragraph
+                    orig_run_format = None
+                    if orig_paragraph.runs:
+                        orig_run_format = orig_paragraph.runs[0]
+                    
+                    for shareholder_idx, shareholder in enumerate(shareholders[1:], 1):
+                        try:
+                            # 复制当前行
+                            new_row = table.add_row()
+                            # 复制原行的格式
+                            for cell_idx_copy, cell in enumerate(table.rows[row_idx].cells):
+                                new_cell = new_row.cells[cell_idx_copy]
+                                # 设置垂直居中 - 必须在添加内容之前设置
+                                new_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                                # 复制单元格内容和格式
+                                for para_idx, cell_paragraph in enumerate(cell.paragraphs):
+                                    new_paragraph = new_cell.add_paragraph()
+                                    new_paragraph.style = cell_paragraph.style
+                                    # 设置水平居中对齐
+                                    new_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                    for run in cell_paragraph.runs:
+                                        new_run = new_paragraph.add_run(run.text)
+                                        new_run.bold = run.bold
+                                        new_run.italic = run.italic
+                                        new_run.underline = run.underline
+                                        new_run.font.size = run.font.size
+                                        new_run.font.name = run.font.name
+                                        if run.font.color.rgb:
+                                            new_run.font.color.rgb = run.font.color.rgb
+                            # 替换新行中的股东占位符为当前股东
+                            target_cell = new_row.cells[cell_idx]
+                            # 清空单元格内容
+                            target_cell.text = ""
+                            # 重新设置垂直居中 - 在清空内容后再次设置
+                            target_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                            # 使用单元格中的第一个段落（清空后会有一个空段落）
+                            if target_cell.paragraphs:
+                                new_para = target_cell.paragraphs[0]
+                            else:
+                                new_para = target_cell.add_paragraph()
+                            # 设置水平居中对齐
+                            new_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            new_run = new_para.add_run(shareholder)
+                            # 复制原始段落的格式 - 确保所有字体属性都被复制
+                            if orig_run_format:
+                                # 复制字体名称
+                                if orig_run_format.font.name:
+                                    new_run.font.name = orig_run_format.font.name
+                                # 复制字体大小
+                                if orig_run_format.font.size:
+                                    new_run.font.size = orig_run_format.font.size
+                                # 复制粗体
+                                new_run.bold = orig_run_format.bold
+                                # 复制斜体
+                                new_run.italic = orig_run_format.italic
+                                # 复制下划线
+                                new_run.underline = orig_run_format.underline
+                                # 复制字体颜色
+                                if orig_run_format.font.color and orig_run_format.font.color.rgb:
+                                    new_run.font.color.rgb = orig_run_format.font.color.rgb
+                                # 复制其他可能的字体属性
+                                try:
+                                    if orig_run_format.font.highlight_color:
+                                        new_run.font.highlight_color = orig_run_format.font.highlight_color
+                                except:
+                                    pass
+                        except Exception as e:
+                            print(f"添加股东行时出错: {str(e)}")
+                            continue
+                elif placeholder["type"] == "table" and len(shareholders) == 1:
+                    # 只有一个股东，直接替换
+                    table = placeholder["table"]
+                    row_idx = placeholder["row_idx"]
+                    cell_idx = placeholder["cell_idx"]
+                    paragraph = placeholder["paragraph"]
+                    if shareholders:
+                        # 获取当前单元格并设置居中
+                        current_cell = table.rows[row_idx].cells[cell_idx]
+                        current_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                        # 合并所有run的文本用于匹配
+                        full_text = "".join([run.text for run in paragraph.runs])
+                        placeholders_in_para = find_placeholders(full_text)
+                        for placeholder_text, placeholder_name in placeholders_in_para:
+                            if placeholder_name == "股东":
+                                placeholder_pos = full_text.find(placeholder_text)
+                                if placeholder_pos != -1:
+                                    # 找到占位符跨越的所有run
+                                    current_pos = 0
+                                    runs_to_modify = []
+                                    for run in paragraph.runs:
+                                        run_start = current_pos
+                                        run_end = current_pos + len(run.text)
+                                        current_pos = run_end
+                                        if run_start < placeholder_pos + len(placeholder_text) and run_end > placeholder_pos:
+                                            runs_to_modify.append((run, run_start, run_end))
+                                    
+                                    if runs_to_modify:
+                                        first_run, first_start, first_end = runs_to_modify[0]
+                                        last_run, last_start, last_end = runs_to_modify[-1]
+                                        
+                                        if len(runs_to_modify) == 1:
+                                            # 占位符完全在一个run中，直接替换
+                                            first_run.text = first_run.text.replace(placeholder_text, shareholders[0])
+                                        else:
+                                            # 占位符跨越多个run，需要合并处理
+                                            offset_in_first = placeholder_pos - first_start
+                                            offset_in_last = (placeholder_pos + len(placeholder_text)) - last_start
+                                            prefix = first_run.text[:offset_in_first] if offset_in_first > 0 else ""
+                                            suffix = last_run.text[offset_in_last:] if offset_in_last < len(last_run.text) else ""
+                                            for run, _, _ in runs_to_modify[1:-1]:
+                                                run.text = ""
+                                            first_run.text = prefix + shareholders[0] + suffix
+                                            last_run.text = ""
+                                        # 设置段落水平居中
+                                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    # 非表格中的{{股东}}
+                    paragraph = placeholder["paragraph"]
+                    if len(shareholders) > 1:
+                        # 多个股东用顿号拼接
+                        shareholder_str = "、".join(shareholders)
+                    else:
+                        # 只有一个股东
+                        shareholder_str = shareholders[0] if shareholders else ""
+                    
+                    # 替换占位符
+                    full_text = "".join([run.text for run in paragraph.runs])
+                    placeholders_in_para = find_placeholders(full_text)
+                    for placeholder_text, placeholder_name in placeholders_in_para:
+                        if placeholder_name == "股东":
+                            placeholder_pos = full_text.find(placeholder_text)
+                            if placeholder_pos != -1:
+                                # 找到占位符跨越的所有run
+                                current_pos = 0
+                                runs_to_modify = []
+                                for run in paragraph.runs:
+                                    run_start = current_pos
+                                    run_end = current_pos + len(run.text)
+                                    current_pos = run_end
+                                    if run_start < placeholder_pos + len(placeholder_text) and run_end > placeholder_pos:
+                                        runs_to_modify.append((run, run_start, run_end))
+                                
+                                if runs_to_modify:
+                                    first_run, first_start, first_end = runs_to_modify[0]
+                                    last_run, last_start, last_end = runs_to_modify[-1]
+                                    
+                                    if len(runs_to_modify) == 1:
+                                        # 占位符完全在一个run中，直接替换
+                                        first_run.text = first_run.text.replace(placeholder_text, shareholder_str)
+                                    else:
+                                        # 占位符跨越多个run，需要合并处理
+                                        offset_in_first = placeholder_pos - first_start
+                                        offset_in_last = (placeholder_pos + len(placeholder_text)) - last_start
+                                        prefix = first_run.text[:offset_in_first] if offset_in_first > 0 else ""
+                                        suffix = last_run.text[offset_in_last:] if offset_in_last < len(last_run.text) else ""
+                                        for run, _, _ in runs_to_modify[1:-1]:
+                                            run.text = ""
+                                        first_run.text = prefix + shareholder_str + suffix
+                                        last_run.text = ""
+        except Exception as e:
+            print(f"处理股东确认书时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
     total_replaced = 0
 
-    # 替换段落中的占位符
+    # 替换其他占位符
     if debug:
         print("\n=== 处理正文段落 ===")
     for paragraph in doc.paragraphs:
         if replace_in_paragraph(paragraph, replacement_dict, debug):
             total_replaced += 1
 
-    # 替换表格中的占位符
+    # 替换表格中的其他占位符
     if debug:
         print("\n=== 处理正文表格 ===")
     for table in doc.tables:
@@ -533,7 +815,6 @@ def fill_template(template_path, excel_path, output_path, debug=False):
         print("Footer XML处理完成")
     else:
         # 如果XML处理没有替换，直接使用中间结果
-        import os
         os.replace(temp_output, output_path)
 
     print(f"已保存到: {output_path}")
