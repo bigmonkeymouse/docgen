@@ -15,6 +15,9 @@ from xml.etree import ElementTree as ET
 from pathlib import Path
 from docx import Document
 from openpyxl import load_workbook
+import datetime
+import json
+from pypinyin import pinyin, Style
 
 
 def load_excel_data(excel_path):
@@ -23,20 +26,222 @@ def load_excel_data(excel_path):
     新格式：两列，第一列是字段名，第二列是对应的值
     返回字典列表，每行数据为一个字典
     """
+    # 验证文件存在性
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f"Excel文件不存在: {excel_path}")
+    
     workbook = load_workbook(excel_path, data_only=True)
     sheet = workbook.active
 
     # 读取两列数据
-    data = {}
+    raw_data = {}
     for row in sheet.iter_rows(min_row=1, values_only=True):
         if len(row) >= 2 and row[0] is not None:
             key = str(row[0]).strip()
             value = str(row[1]) if row[1] is not None else ""
             if key:  # 只处理有字段名的行
-                data[key] = value
+                raw_data[key] = value
 
+    # 生成处理后的数据
+    processed_data = {}
+    
+    # 1. 所在分行缩写
+    if "所在分行" in raw_data:
+        branch = raw_data["所在分行"]
+        # 提取城市名（去掉"分行"二字）
+        city_name = branch.replace("分行", "")
+        # 提取拼音首字母大写
+        pinyin_list = pinyin(city_name, style=Style.FIRST_LETTER)
+        pinyin_abbr = "".join([p[0].upper() for p in pinyin_list])
+        processed_data["所在分行缩写"] = f"{pinyin_abbr}分行"
+    
+    # 2. 批复金额
+    if "批复金额" in raw_data:
+        try:
+            amount = float(raw_data["批复金额"])
+            # 格式化保留两位小数（国际计数法，3位一节用逗号隔开）
+            formatted_amount = "{:,.2f}".format(amount)
+            # 存储格式化后的金额
+            processed_data["批复金额"] = formatted_amount
+            # 转换为银行标准大写
+            processed_data["批复金额大写"] = num_to_Chinese(amount)
+        except ValueError:
+            processed_data["批复金额"] = ""
+            processed_data["批复金额大写"] = ""
+    
+    # 3. 额度启用日期和到期日期
+    if "额度启用日期" in raw_data:
+        enable_date_str = raw_data["额度启用日期"]
+        try:
+            # 解析日期（格式如"2026年2月"）
+            parts = enable_date_str.split("年")
+            year = int(parts[0])
+            month = int(parts[1].replace("月", ""))
+            # 额度启用日期缩写
+            processed_data["额度启用日期缩写"] = f"{year}.{month:02d}"
+            # 额度到期日期（加一年）
+            processed_data["额度到期日期"] = f"{year+1}年{month}月"
+        except (IndexError, ValueError):
+            processed_data["额度启用日期缩写"] = ""
+            processed_data["额度到期日期"] = ""
+    
+    # 4. 合同制作日期
+    current_date = datetime.datetime.now()
+    processed_data["合同制作日期"] = current_date.strftime("%Y%m%d")
+    
+    # 5. 合同制作号
+    processed_data["合同制作号"] = generate_contract_number()
+    
+    # 6. 各类合同编号
+    if "所在分行缩写" in processed_data and "部门" in raw_data:
+        branch_abbr = processed_data["所在分行缩写"]
+        department = raw_data["部门"]
+        contract_date = processed_data["合同制作日期"]
+        contract_number = processed_data["合同制作号"]
+        
+        processed_data["综字1"] = f"平银{branch_abbr}{department}综字{contract_date}{contract_number}"
+        processed_data["资池字2"] = f"平银{branch_abbr}{department}资池字{contract_date}{contract_number}"
+        processed_data["资池质字3"] = f"平银{branch_abbr}{department}资池质字{contract_date}{contract_number}"
+        processed_data["自由票字4"] = f"平银{branch_abbr}{department}自由票字{contract_date}{contract_number}"
+        processed_data["线融字5"] = f"平银{branch_abbr}{department}线融字{contract_date}{contract_number}"
+        processed_data["国内信字6"] = f"平银{branch_abbr}{department}国内信字{contract_date}{contract_number}"
+        processed_data["国内信商字7"] = f"平银{branch_abbr}{department}国内信商字{contract_date}{contract_number}"
+    
+    # 合并原始数据和处理后的数据
+    data = {**raw_data, **processed_data}
+    
+    print(f"处理后的数据: {list(processed_data.keys())}")
+    
     # 返回包含一个字典的列表
     return [data] if data else []
+
+
+def num_to_Chinese(num):
+    """
+    将数字转换为银行标准大写金额
+    """
+    digits = ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"]
+    units = ["", "拾", "佰", "仟"]
+    big_units = ["", "万", "亿"]
+    
+    if num == 0:
+        return "零元整"
+    
+    # 处理整数部分和小数部分
+    integer_part = int(num)
+    decimal_part = int(round((num - integer_part) * 100))
+    
+    result = ""
+    
+    # 处理整数部分
+    if integer_part > 0:
+        unit_index = 0
+        big_unit_index = 0
+        temp = ""
+        
+        while integer_part > 0:
+            digit = integer_part % 10
+            if digit > 0:
+                temp = digits[digit] + units[unit_index] + temp
+            else:
+                # 避免连续的零
+                if temp and not temp.startswith("零"):
+                    temp = "零" + temp
+            
+            unit_index += 1
+            if unit_index == 4:
+                # 每四位处理一次
+                if temp:
+                    result = temp + big_units[big_unit_index] + result
+                temp = ""
+                unit_index = 0
+                big_unit_index += 1
+            
+            integer_part = integer_part // 10
+        
+        if temp:
+            result = temp + big_units[big_unit_index] + result
+        
+        result += "元"
+    
+    # 处理小数部分
+    if decimal_part == 0:
+        result += "整"
+    else:
+        jiao = decimal_part // 10
+        fen = decimal_part % 10
+        if jiao > 0:
+            result += digits[jiao] + "角"
+        if fen > 0:
+            result += digits[fen] + "分"
+    
+    return result
+
+
+def generate_contract_number():
+    """
+    生成合同制作号
+    规则：每日早上8点开始编号，初始值为"第001号"，每1分30秒递增1，次日早上8点重置
+    """
+    # 存储上次生成的信息
+    state_file = os.path.join(os.path.dirname(__file__), "contract_number_state.json")
+    
+    now = datetime.datetime.now()
+    today = now.date()
+    
+    # 检查是否需要重置
+    if now.hour < 8:
+        # 凌晨到8点，使用前一天的编号
+        yesterday = today - datetime.timedelta(days=1)
+        reset_time = datetime.datetime.combine(yesterday, datetime.time(8, 0, 0))
+    else:
+        reset_time = datetime.datetime.combine(today, datetime.time(8, 0, 0))
+    
+    # 计算从重置时间到现在经过的秒数
+    seconds_since_reset = (now - reset_time).total_seconds()
+    
+    # 每1分30秒（90秒）递增一个编号
+    interval = int(seconds_since_reset // 90)
+    
+    # 读取或初始化状态
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+        else:
+            state = {
+                "last_reset_date": reset_time.strftime("%Y-%m-%d"),
+                "last_interval": -1,
+                "current_number": 0
+            }
+    except Exception:
+        state = {
+            "last_reset_date": reset_time.strftime("%Y-%m-%d"),
+            "last_interval": -1,
+            "current_number": 0
+        }
+    
+    # 检查是否需要重置
+    if state["last_reset_date"] != reset_time.strftime("%Y-%m-%d"):
+        state["last_reset_date"] = reset_time.strftime("%Y-%m-%d")
+        state["last_interval"] = -1
+        state["current_number"] = 0
+    
+    # 计算应该的编号（从1开始）
+    current_number = interval + 1
+    
+    # 保存状态
+    state["last_interval"] = interval
+    state["current_number"] = current_number
+    
+    try:
+        with open(state_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    
+    # 生成编号
+    return f"第{current_number:03d}号"
 
 
 def find_placeholders(text):
@@ -337,7 +542,7 @@ def fill_template(template_path, excel_path, output_path, debug=False):
 def main():
     parser = argparse.ArgumentParser(description="Word模板填充工具")
     parser.add_argument("--template", required=True, help="Word模板文件路径")
-    parser.add_argument("--excel", required=True, help="Excel数据文件路径")
+    parser.add_argument("--excel", default="input.xlsx", help="Excel数据文件路径（默认：input.xlsx）")
     parser.add_argument("--output", required=True, help="输出文件路径")
     parser.add_argument("--debug", action="store_true", help="显示详细调试信息")
 
@@ -356,15 +561,20 @@ def main():
         print(f"错误：Excel文件不存在: {excel_path}")
         sys.exit(1)
 
+    print(f"=== Word模板填充工具 ===")
+    print(f"模板文件: {template_path}")
+    print(f"Excel数据: {excel_path}")
+    print(f"输出文件: {output_path}")
+
     # 创建输出目录（如果需要）
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 执行填充
     try:
         fill_template(template_path, excel_path, output_path, debug=args.debug)
-        print("填充成功！")
+        print("\n填充成功！")
     except Exception as e:
-        print(f"填充失败: {str(e)}")
+        print(f"\n填充失败: {str(e)}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
