@@ -80,7 +80,7 @@ class DocGenGUI:
             return
         
         # 构建命令
-        command = f"python {script_path} --excel {excel_path}"
+        command = f"python {script_path} --excel {excel_path} --zip-output {self.zip_output_path}"
         
         # 执行命令
         try:

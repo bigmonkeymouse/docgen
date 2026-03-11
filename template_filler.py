@@ -783,7 +783,7 @@ def fill_template(template_path, excel_path, output_path, debug=False):
     print(f"已保存到: {output_path}")
 
 
-def process_all_templates(excel_path, debug=False):
+def process_all_templates(excel_path, zip_output_path=None, debug=False):
     """
     处理所有Word模板文件
     1. 遍历脚本所在目录下所有.docx文件
@@ -827,7 +827,10 @@ def process_all_templates(excel_path, debug=False):
         generated_files.append(output_path)
     
     # 打包为ZIP文件
-    zip_output = os.path.join(script_dir, "generated_documents.zip")
+    if zip_output_path:
+        zip_output = os.path.join(zip_output_path, "generated_documents.zip")
+    else:
+        zip_output = os.path.join(script_dir, "generated_documents.zip")
     print(f"\n打包所有生成的文档到: {zip_output}")
     
     with zipfile.ZipFile(zip_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -846,6 +849,7 @@ def process_all_templates(excel_path, debug=False):
 def main():
     parser = argparse.ArgumentParser(description="Word模板填充工具")
     parser.add_argument("--excel", default="input.xlsx", help="Excel数据文件路径（默认：input.xlsx）")
+    parser.add_argument("--zip-output", default=None, help="ZIP文件输出路径（默认：脚本所在目录）")
     parser.add_argument("--debug", action="store_true", help="显示详细调试信息")
 
     args = parser.parse_args()
@@ -859,10 +863,12 @@ def main():
 
     print(f"=== Word模板填充工具 ===")
     print(f"Excel数据: {excel_path}")
+    if args.zip_output:
+        print(f"ZIP输出路径: {args.zip_output}")
 
     # 执行填充
     try:
-        process_all_templates(excel_path, debug=args.debug)
+        process_all_templates(excel_path, zip_output_path=args.zip_output, debug=args.debug)
         print("\n填充成功！")
     except Exception as e:
         print(f"\n填充失败: {str(e)}")
