@@ -201,9 +201,6 @@ def generate_contract_number():
     生成合同制作号
     规则：每日早上8点开始编号，初始值为"第001号"，每1分30秒递增1，次日早上8点重置
     """
-    # 存储上次生成的信息
-    state_file = os.path.join(os.path.dirname(__file__), "contract_number_state.json")
-    
     now = datetime.datetime.now()
     today = now.date()
     
@@ -221,42 +218,8 @@ def generate_contract_number():
     # 每1分30秒（90秒）递增一个编号
     interval = int(seconds_since_reset // 90)
     
-    # 读取或初始化状态
-    try:
-        if os.path.exists(state_file):
-            with open(state_file, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-        else:
-            state = {
-                "last_reset_date": reset_time.strftime("%Y-%m-%d"),
-                "last_interval": -1,
-                "current_number": 0
-            }
-    except Exception:
-        state = {
-            "last_reset_date": reset_time.strftime("%Y-%m-%d"),
-            "last_interval": -1,
-            "current_number": 0
-        }
-    
-    # 检查是否需要重置
-    if state["last_reset_date"] != reset_time.strftime("%Y-%m-%d"):
-        state["last_reset_date"] = reset_time.strftime("%Y-%m-%d")
-        state["last_interval"] = -1
-        state["current_number"] = 0
-    
     # 计算应该的编号（从1开始）
     current_number = interval + 1
-    
-    # 保存状态
-    state["last_interval"] = interval
-    state["current_number"] = current_number
-    
-    try:
-        with open(state_file, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
     
     # 生成编号
     return f"第{current_number:03d}号"
@@ -820,39 +783,86 @@ def fill_template(template_path, excel_path, output_path, debug=False):
     print(f"已保存到: {output_path}")
 
 
+def process_all_templates(excel_path, debug=False):
+    """
+    处理所有Word模板文件
+    1. 遍历脚本所在目录下所有.docx文件
+    2. 为每个模板生成对应的输出文件
+    3. 将所有生成的文档打包为ZIP压缩包
+    """
+    # 获取脚本所在目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"脚本所在目录: {script_dir}")
+    
+    # 查找所有.docx文件
+    docx_files = []
+    for file in os.listdir(script_dir):
+        if file.endswith(".docx"):
+            docx_files.append(os.path.join(script_dir, file))
+    
+    if not docx_files:
+        print("错误：目录中没有找到.docx文件")
+        return
+    
+    print(f"找到 {len(docx_files)} 个Word模板文件:")
+    for docx_file in docx_files:
+        print(f"  - {os.path.basename(docx_file)}")
+    
+    # 创建临时输出目录
+    temp_output_dir = os.path.join(script_dir, "temp_output")
+    os.makedirs(temp_output_dir, exist_ok=True)
+    
+    # 处理每个模板文件
+    generated_files = []
+    for template_path in docx_files:
+        template_name = os.path.basename(template_path)
+        output_file_name = template_name  # 保持与模板相同的名称
+        output_path = os.path.join(temp_output_dir, output_file_name)
+        
+        print(f"\n处理模板: {template_name}")
+        print(f"输出文件: {output_file_name}")
+        
+        # 执行填充
+        fill_template(template_path, excel_path, output_path, debug=debug)
+        generated_files.append(output_path)
+    
+    # 打包为ZIP文件
+    zip_output = os.path.join(script_dir, "generated_documents.zip")
+    print(f"\n打包所有生成的文档到: {zip_output}")
+    
+    with zipfile.ZipFile(zip_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in generated_files:
+            file_name = os.path.basename(file_path)
+            zipf.write(file_path, file_name)
+    
+    print(f"\nZIP包创建成功！")
+    print(f"生成的文档已打包到: {zip_output}")
+    
+    # 清理临时目录
+    import shutil
+    shutil.rmtree(temp_output_dir)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Word模板填充工具")
-    parser.add_argument("--template", required=True, help="Word模板文件路径")
     parser.add_argument("--excel", default="input.xlsx", help="Excel数据文件路径（默认：input.xlsx）")
-    parser.add_argument("--output", required=True, help="输出文件路径")
     parser.add_argument("--debug", action="store_true", help="显示详细调试信息")
 
     args = parser.parse_args()
 
     # 检查文件存在性
-    template_path = Path(args.template)
     excel_path = Path(args.excel)
-    output_path = Path(args.output)
-
-    if not template_path.exists():
-        print(f"错误：模板文件不存在: {template_path}")
-        sys.exit(1)
 
     if not excel_path.exists():
         print(f"错误：Excel文件不存在: {excel_path}")
         sys.exit(1)
 
     print(f"=== Word模板填充工具 ===")
-    print(f"模板文件: {template_path}")
     print(f"Excel数据: {excel_path}")
-    print(f"输出文件: {output_path}")
-
-    # 创建输出目录（如果需要）
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 执行填充
     try:
-        fill_template(template_path, excel_path, output_path, debug=args.debug)
+        process_all_templates(excel_path, debug=args.debug)
         print("\n填充成功！")
     except Exception as e:
         print(f"\n填充失败: {str(e)}")
