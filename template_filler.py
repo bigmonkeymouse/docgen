@@ -454,18 +454,15 @@ def replace_in_footers_xml(docx_path, replacement_dict, output_path, debug=False
     return replaced
 
 
-def fill_template(template_path, excel_path, output_path, debug=False):
+def fill_template(template_path, excel_data, output_path, debug=False):
     """
     填充Word模板
     """
     # 加载Word模板
     doc = Document(template_path)
 
-    # 加载Excel数据
-    excel_data = load_excel_data(excel_path)
-
     if not excel_data:
-        print("警告：Excel中没有数据")
+        print("警告：没有数据可供填充")
         return
 
     # 使用第一行数据（如需多行生成，需要多次处理）
@@ -794,10 +791,30 @@ def process_all_templates(excel_path, debug=False):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     print(f"脚本所在目录: {script_dir}")
     
+    # 加载Excel数据
+    excel_data = load_excel_data(excel_path)
+    if not excel_data:
+        print("错误：Excel中没有数据")
+        return
+    
+    # 提取企业名称和额度启用日期用于ZIP命名
+    data = excel_data[0]
+    company_name = data.get("企业名称", "未命名企业")
+    enable_date = data.get("额度启用日期", "未知日期")
+    
+    # 生成当前时间
+    current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    
+    # 构造ZIP文件名：企业名称+额度启动日期+生成的此时时间
+    zip_name = f"{company_name}_{enable_date}_{current_time}.zip"
+    # 替换文件名中的非法字符
+    zip_name = re.sub(r'[\\/:*?"<>|]', "_", zip_name)
+    zip_output = os.path.join(script_dir, zip_name)
+
     # 查找所有.docx文件
     docx_files = []
     for file in os.listdir(script_dir):
-        if file.endswith(".docx"):
+        if file.endswith(".docx") and not file.startswith("~$"):  # 排除Office临时文件
             docx_files.append(os.path.join(script_dir, file))
     
     if not docx_files:
@@ -823,11 +840,10 @@ def process_all_templates(excel_path, debug=False):
         print(f"输出文件: {output_file_name}")
         
         # 执行填充
-        fill_template(template_path, excel_path, output_path, debug=debug)
+        fill_template(template_path, excel_data, output_path, debug=debug)
         generated_files.append(output_path)
     
     # 打包为ZIP文件
-    zip_output = os.path.join(script_dir, "generated_documents.zip")
     print(f"\n打包所有生成的文档到: {zip_output}")
     
     with zipfile.ZipFile(zip_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
