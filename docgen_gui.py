@@ -602,9 +602,14 @@ class DocGenGUI(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
         self.progress_label.setText(STR["STATUS_PREPARING"])
+
+        python_exe = sys.executable
+        venv_python_exe = os.path.join(script_dir, ".venv", "Scripts", "python.exe")
+        if os.path.exists(venv_python_exe):
+            python_exe = venv_python_exe
         
         command = [
-            f'"{sys.executable}"',
+            f'"{python_exe}"',
             f'"{script_path}"',
             f'--excel "{excel_path}"',
             f'--template-dir "{template_dir}"',
