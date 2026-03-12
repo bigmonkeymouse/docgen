@@ -26,6 +26,20 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QEvent, QSize, QUrl
 from PySide6.QtGui import QFont, QColor, QPalette, QDesktopServices
 
+def _is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+def _get_install_dir() -> str:
+    if _is_frozen_app():
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _get_roaming_app_dir(app_name: str) -> str:
+    roaming = os.environ.get("APPDATA")
+    if roaming and roaming.strip():
+        return os.path.join(roaming, app_name)
+    return os.path.join(os.path.expanduser("~"), "AppData", "Roaming", app_name)
+
 # i18n-ready string resources (English keys, localized values)
 STR = {
     "APP_WINDOW_TITLE": "合同自动生成工具",
@@ -61,7 +75,6 @@ STR = {
     "LOG_TASK_FAILED": "生成过程中出现错误：{error}",
     "LOG_ZIP_EXPORTED": "已成功导出：{name}",
     "BTN_START": "生成文档",
-    "BTN_CHOOSE_TEMPLATE": "选择模板",
     "BTN_OPEN_TEMPLATE_LIBRARY": "模板库",
     "BTN_VIEW_LOG": "查看日志",
     "BTN_OPEN_SETTINGS": "偏好设置",
@@ -419,11 +432,6 @@ class DocGenGUI(QMainWindow):
         status_layout.addWidget(self.generate_btn, 2, 0, 1, 3)
 
         # Small secondary actions on third row
-        self.choose_template_btn = QPushButton(STR["BTN_CHOOSE_TEMPLATE"])
-        self.choose_template_btn.setObjectName("SecondaryBtn")
-        self.choose_template_btn.setCursor(Qt.PointingHandCursor)
-        self.choose_template_btn.setFixedHeight(32)
-
         self.show_log_btn = QPushButton(STR["BTN_VIEW_LOG"])
         self.show_log_btn.setObjectName("SecondaryBtn")
         self.show_log_btn.setCursor(Qt.PointingHandCursor)
@@ -434,8 +442,7 @@ class DocGenGUI(QMainWindow):
         self.settings_btn.setCursor(Qt.PointingHandCursor)
         self.settings_btn.setFixedHeight(32)
 
-        status_layout.addWidget(self.choose_template_btn, 3, 0, alignment=Qt.AlignLeft)
-        status_layout.addWidget(self.show_log_btn, 3, 1, alignment=Qt.AlignLeft)
+        status_layout.addWidget(self.show_log_btn, 3, 0, alignment=Qt.AlignLeft)
         status_layout.addWidget(self.settings_btn, 3, 2, alignment=Qt.AlignRight)
         status_layout.setColumnStretch(0, 0)
         status_layout.setColumnStretch(1, 0)
@@ -444,7 +451,6 @@ class DocGenGUI(QMainWindow):
         self.main_layout.addWidget(self.status_card)
 
         self.settings_btn.clicked.connect(self.open_settings)
-        self.choose_template_btn.clicked.connect(self.choose_template_folder)
         self.show_log_btn.clicked.connect(self.log_dialog.exec)
         self.last_zip_path = None
         self.reset_ready_state()
@@ -486,10 +492,19 @@ class DocGenGUI(QMainWindow):
         self.generate_btn.setEnabled(True)
 
     def load_config(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(script_dir, "config.json")
-        default_template_dir = self.compute_default_template_dir(script_dir)
-        self.ensure_word_template_folder(script_dir, default_template_dir)
+        install_dir = _get_install_dir()
+        if _is_frozen_app():
+            app_dir = _get_roaming_app_dir("DocGen")
+            os.makedirs(app_dir, exist_ok=True)
+            self.config_path = os.path.join(app_dir, "config.json")
+            default_template_dir = os.path.join(app_dir, "word_template")
+            self.ensure_word_template_folder(install_dir, default_template_dir)
+            script_dir = install_dir
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self.config_path = os.path.join(script_dir, "config.json")
+            default_template_dir = self.compute_default_template_dir(script_dir)
+            self.ensure_word_template_folder(script_dir, default_template_dir)
 
         default_config = {
             "word_template_folder": default_template_dir,
@@ -540,15 +555,6 @@ class DocGenGUI(QMainWindow):
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=4, ensure_ascii=False)
 
-    def choose_template_folder(self):
-        current = self.config.get("word_template_folder") or os.path.dirname(os.path.abspath(__file__))
-        path = QFileDialog.getExistingDirectory(self, STR["DIALOG_SELECT_TEMPLATE_FOLDER_TITLE"], current)
-        if not path:
-            return
-        self.config["word_template_folder"] = path
-        self.save_config()
-        self.check_templates_ready(show_dialog=True)
-
     def open_settings(self):
         dialog = SettingsDialog(self.config, self)
         if dialog.exec():
@@ -558,7 +564,7 @@ class DocGenGUI(QMainWindow):
     def generate_contract(self):
         if not self.check_templates_ready(show_dialog=True):
             return
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = _get_install_dir() if _is_frozen_app() else os.path.dirname(os.path.abspath(__file__))
         excel_initial_dir = self.config.get("last_excel_dir") or script_dir
         excel_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -588,9 +594,9 @@ class DocGenGUI(QMainWindow):
             return
 
         zip_output_dir = os.path.dirname(os.path.abspath(excel_path))
-
+        is_frozen = _is_frozen_app()
         script_path = os.path.join(script_dir, "template_filler.py")
-        if not os.path.exists(script_path):
+        if not is_frozen and not os.path.exists(script_path):
             self.log(STR["ERROR_CORE_SCRIPT_MISSING"], "#FF3B30")
             QMessageBox.critical(self, STR["ERROR_TITLE"], STR["ERROR_CORE_SCRIPT_MISSING"])
             self.reset_ready_state()
@@ -603,18 +609,26 @@ class DocGenGUI(QMainWindow):
         self.progress_bar.setFormat("0%")
         self.progress_label.setText(STR["STATUS_PREPARING"])
 
-        python_exe = sys.executable
-        venv_python_exe = os.path.join(script_dir, ".venv", "Scripts", "python.exe")
-        if os.path.exists(venv_python_exe):
-            python_exe = venv_python_exe
-        
-        command = [
-            f'"{python_exe}"',
-            f'"{script_path}"',
-            f'--excel "{excel_path}"',
-            f'--template-dir "{template_dir}"',
-            f'--zip-output "{zip_output_dir}"'
-        ]
+        if is_frozen:
+            command = [
+                f'"{sys.executable}"',
+                "--run-filler",
+                f'--excel "{excel_path}"',
+                f'--template-dir "{template_dir}"',
+                f'--zip-output "{zip_output_dir}"',
+            ]
+        else:
+            python_exe = sys.executable
+            venv_python_exe = os.path.join(script_dir, ".venv", "Scripts", "python.exe")
+            if os.path.exists(venv_python_exe):
+                python_exe = venv_python_exe
+            command = [
+                f'"{python_exe}"',
+                f'"{script_path}"',
+                f'--excel "{excel_path}"',
+                f'--template-dir "{template_dir}"',
+                f'--zip-output "{zip_output_dir}"',
+            ]
         full_command = " ".join(command)
 
         self.worker = Worker(full_command)
@@ -667,24 +681,24 @@ class DocGenGUI(QMainWindow):
             except Exception as e:
                 print(f"[docgen_gui] 回退目录创建失败：{e}")
                 return
+            word_template_dir = fallback
 
         try:
-            candidates = []
-            for name in os.listdir(script_dir):
-                if not name.lower().endswith(".docx"):
-                    continue
+            src_template_dir = os.path.join(script_dir, "word_template")
+            if not os.path.isdir(src_template_dir):
+                return
+            import shutil
+            for name in os.listdir(src_template_dir):
                 if name.startswith("~$"):
                     continue
-                candidates.append(os.path.join(script_dir, name))
-
-            for src_path in candidates:
-                dest_path = os.path.join(word_template_dir, os.path.basename(src_path))
-                if os.path.abspath(src_path) == os.path.abspath(dest_path):
+                if not name.lower().endswith(".docx"):
                     continue
+                src_path = os.path.join(src_template_dir, name)
+                dest_path = os.path.join(word_template_dir, name)
                 if os.path.exists(dest_path):
                     continue
                 try:
-                    os.replace(src_path, dest_path)
+                    shutil.copy2(src_path, dest_path)
                 except Exception:
                     continue
         except Exception:
@@ -738,15 +752,20 @@ class DocGenGUI(QMainWindow):
 
     def setup_tab_order(self):
         try:
-            self.setTabOrder(self.choose_template_btn, self.generate_btn)
             self.setTabOrder(self.generate_btn, self.show_log_btn)
             self.setTabOrder(self.show_log_btn, self.settings_btn)
         except Exception:
             pass
 
 if __name__ == "__main__":
+    if "--run-filler" in sys.argv:
+        idx = sys.argv.index("--run-filler")
+        sys.argv = [sys.argv[0]] + sys.argv[idx + 1 :]
+        import template_filler
+        template_filler.main()
+        sys.exit(0)
+
     app = QApplication(sys.argv)
-    
     main_win = DocGenGUI()
     main_win.show()
     sys.exit(app.exec())
