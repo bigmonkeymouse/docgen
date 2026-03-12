@@ -454,24 +454,18 @@ def replace_in_footers_xml(docx_path, replacement_dict, output_path, debug=False
     return replaced
 
 
-def fill_template(template_path, excel_path, output_path, debug=False):
+def fill_template(template_path, replacement_dict, output_path, debug=False):
     """
     填充Word模板
     """
     # 加载Word模板
     doc = Document(template_path)
 
-    # 加载Excel数据
-    excel_data = load_excel_data(excel_path)
-
-    if not excel_data:
-        print("警告：Excel中没有数据")
+    if not replacement_dict:
+        print("警告：没有替换数据")
         return
 
-    # 使用第一行数据（如需多行生成，需要多次处理）
-    replacement_dict = excel_data[0]
-
-    print(f"从Excel中加载了 {len(replacement_dict)} 个替换字段")
+    print(f"使用 {len(replacement_dict)} 个替换字段进行填充")
     if debug:
         print(f"替换字段列表: {list(replacement_dict.keys())}")
 
@@ -783,72 +777,123 @@ def fill_template(template_path, excel_path, output_path, debug=False):
     print(f"已保存到: {output_path}")
 
 
-def process_all_templates(excel_path, zip_output_path=None, debug=False):
+def process_all_templates(excel_path, template_dir=None, zip_output_path=None, debug=False):
     """
     处理所有Word模板文件
-    1. 遍历脚本所在目录下所有.docx文件
+    1. 遍历模板目录下所有.docx文件
     2. 为每个模板生成对应的输出文件
     3. 将所有生成的文档打包为ZIP压缩包
     """
-    # 获取脚本所在目录
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    print(f"脚本所在目录: {script_dir}")
+    # 加载Excel数据
+    excel_data = load_excel_data(excel_path)
+    if not excel_data:
+        print("错误：Excel中没有数据")
+        return
+    
+    # 获取第一行数据用于模板填充和ZIP命名
+    replacement_dict = excel_data[0]
+    company_name = replacement_dict.get("企业名称", "未知企业")
+    enable_date = replacement_dict.get("额度启用日期", "未知日期")
+    current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 过滤掉日期字符串中的非法字符（如果是文件名的话）
+    def sanitize_filename(name):
+        return "".join([c for c in name if c not in '<>:"/\\|?*']).strip()
+    
+    safe_company = sanitize_filename(company_name)
+    safe_date = sanitize_filename(enable_date)
+    zip_filename = f"{safe_company}_{safe_date}_{current_time}.zip"
+
+    # 获取模板目录
+    if template_dir:
+        target_dir = os.path.abspath(template_dir)
+    else:
+        target_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    print(f"模板目录: {target_dir}")
     
     # 查找所有.docx文件
     docx_files = []
-    for file in os.listdir(script_dir):
-        if file.endswith(".docx"):
-            docx_files.append(os.path.join(script_dir, file))
+    if not os.path.exists(target_dir):
+        print(f"错误：模板目录不存在: {target_dir}")
+        return
+
+    for file in os.listdir(target_dir):
+        if file.endswith(".docx") and not file.startswith("~$"):
+            docx_files.append(os.path.join(target_dir, file))
     
     if not docx_files:
-        print("错误：目录中没有找到.docx文件")
+        print(f"错误：目录 {target_dir} 中没有找到.docx文件")
         return
     
-    print(f"找到 {len(docx_files)} 个Word模板文件:")
+    total_files = len(docx_files)
+    print(f"TOTAL_TEMPLATES:{total_files}")
+    print(f"找到 {total_files} 个Word模板文件:")
     for docx_file in docx_files:
         print(f"  - {os.path.basename(docx_file)}")
     
     # 创建临时输出目录
-    temp_output_dir = os.path.join(script_dir, "temp_output")
+    # 使用系统临时目录或脚本目录下
+    temp_output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_output")
     os.makedirs(temp_output_dir, exist_ok=True)
     
     # 处理每个模板文件
     generated_files = []
-    for template_path in docx_files:
+    for idx, template_path in enumerate(docx_files, 1):
         template_name = os.path.basename(template_path)
         output_file_name = template_name  # 保持与模板相同的名称
         output_path = os.path.join(temp_output_dir, output_file_name)
         
+        print(f"PROGRESS:{idx}/{total_files}")
         print(f"\n处理模板: {template_name}")
         print(f"输出文件: {output_file_name}")
         
         # 执行填充
-        fill_template(template_path, excel_path, output_path, debug=debug)
-        generated_files.append(output_path)
+        try:
+            fill_template(template_path, replacement_dict, output_path, debug=debug)
+            generated_files.append(output_path)
+        except Exception as e:
+            print(f"填充模板 {template_name} 失败: {str(e)}")
+            continue
     
+    if not generated_files:
+        print("错误：没有成功生成任何文档")
+        return
+
     # 打包为ZIP文件
     if zip_output_path:
-        zip_output = os.path.join(zip_output_path, "generated_documents.zip")
+        zip_output = os.path.join(zip_output_path, zip_filename)
     else:
-        zip_output = os.path.join(script_dir, "generated_documents.zip")
+        zip_output = os.path.join(os.path.dirname(os.path.abspath(__file__)), zip_filename)
+    
     print(f"\n打包所有生成的文档到: {zip_output}")
     
-    with zipfile.ZipFile(zip_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in generated_files:
-            file_name = os.path.basename(file_path)
-            zipf.write(file_path, file_name)
-    
-    print(f"\nZIP包创建成功！")
-    print(f"生成的文档已打包到: {zip_output}")
+    try:
+        with zipfile.ZipFile(zip_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in generated_files:
+                file_name = os.path.basename(file_path)
+                zipf.write(file_path, file_name)
+        
+        print(f"\nZIP包创建成功！")
+        print(f"生成的文档已打包到: {zip_output}")
+        # 输出一个特定的成功标记，方便GUI解析
+        print(f"SUCCESS_COUNT:{len(generated_files)}")
+        print(f"ZIP_PATH:{zip_output}")
+    except Exception as e:
+        print(f"创建ZIP包失败: {str(e)}")
     
     # 清理临时目录
-    import shutil
-    shutil.rmtree(temp_output_dir)
+    try:
+        import shutil
+        shutil.rmtree(temp_output_dir)
+    except:
+        pass
 
 
 def main():
     parser = argparse.ArgumentParser(description="Word模板填充工具")
     parser.add_argument("--excel", default="input.xlsx", help="Excel数据文件路径（默认：input.xlsx）")
+    parser.add_argument("--template-dir", default=None, help="Word模板文件夹路径（默认：脚本所在目录）")
     parser.add_argument("--zip-output", default=None, help="ZIP文件输出路径（默认：脚本所在目录）")
     parser.add_argument("--debug", action="store_true", help="显示详细调试信息")
 
@@ -863,13 +908,15 @@ def main():
 
     print(f"=== Word模板填充工具 ===")
     print(f"Excel数据: {excel_path}")
+    if args.template_dir:
+        print(f"模板目录: {args.template_dir}")
     if args.zip_output:
         print(f"ZIP输出路径: {args.zip_output}")
 
     # 执行填充
     try:
-        process_all_templates(excel_path, zip_output_path=args.zip_output, debug=args.debug)
-        print("\n填充成功！")
+        process_all_templates(excel_path, template_dir=args.template_dir, zip_output_path=args.zip_output, debug=args.debug)
+        print("\n填充任务结束")
     except Exception as e:
         print(f"\n填充失败: {str(e)}")
         import traceback
