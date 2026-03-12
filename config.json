@@ -1,5 +1,4 @@
 {
-    "word_template_folder": "F:\\ai_proj\\doc_gen\\code\\docgen",
-    "excel_path": "F:\\ai_proj\\doc_gen\\code\\docgen\\input.xlsx",
-    "zip_output_path": "F:\\ai_proj\\doc_gen\\code\\docgen"
+    "word_template_folder": "F:/ai_proj/doc_gen/code/docgen/word_template",
+    "last_excel_dir": "C:\\Users\\carengineer\\Desktop\\test"
 }
